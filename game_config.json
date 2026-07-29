@@ -1,0 +1,8 @@
+{
+  "name": "Pstro Laucher",
+  "target": "pstro_launcher",
+  "nds_game_code": "J2DS",
+  "nds_internal_title": "PSTROLAUNCH",
+  "audio": false,
+  "jar_source": "FAT runtime"
+}
