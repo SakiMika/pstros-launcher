@@ -51,3 +51,16 @@ Update - list display fix:
 - Launcher list is now printed sequentially after FAT scan.
 - Avoids cursor-positioned blank rows seen on some real DS console setups.
 - Selected JAR is prefixed by '>'.
+
+
+CANVAS / SCREEN MODE
+--------------------
+Launcher mode always exposes a 256x192 Canvas at position X=0, Y=0.
+Per-game NDS-resolution, NDS-screen-X and NDS-screen-Y values are ignored.
+Games designed for another resolution should be adapted to 256x192 before testing.
+
+CHE DO CANVAS
+--------------
+Ban launcher luon cap Canvas 256x192 tai vi tri X=0, Y=0.
+Cac gia tri NDS-resolution, NDS-screen-X va NDS-screen-Y trong tung game bi bo qua.
+Game dung do phan giai khac nen duoc chinh sang 256x192 truoc khi thu.
