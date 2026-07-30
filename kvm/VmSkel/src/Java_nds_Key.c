@@ -75,6 +75,7 @@ static char g_statusHang[32] = "HANG: none";
 static char g_logLines[UI_LOG_CAP][32];
 static int g_logCount;
 static int g_logHead;
+static int g_touchWasHeld;
 
 void pstrosUiSetGameId(const char *gameId, const char *displayName) {
     char safe[96];
@@ -240,6 +241,7 @@ static void uiInit(void) {
     g_uiScrollSingle = 0;
     g_uiScrollCombo = 0;
     g_prevLogicalHeld = 0;
+    g_touchWasHeld = 0;
     uiLoad();
     g_uiReady = 1;
     g_uiDirty = 1;
@@ -378,52 +380,60 @@ static void firstTwoPhysicalBits(unsigned int mask, unsigned int *a, unsigned in
 static void uiHandleTouch(unsigned int rawDown, unsigned int rawHeld) {
     touchPosition pos;
     int yrow;
-    if ((rawHeld & KEY_TOUCH) == 0) return;
+    int pressed;
+    if ((rawHeld & KEY_TOUCH) == 0) {
+        g_touchWasHeld = 0;
+        return;
+    }
     touchRead(&pos);
-    if (pos.px < 0 || pos.py < 0) return;
-    if (rawDown & KEY_TOUCH) {
-        if (pos.py < 18) {
-            if (pos.px < 85) g_uiTab = UI_TAB_SINGLE;
-            else if (pos.px < 170) g_uiTab = UI_TAB_COMBO;
-            else g_uiTab = UI_TAB_LOG;
+    if (pos.px < 0 || pos.py < 0) {
+        g_touchWasHeld = 1;
+        return;
+    }
+    pressed = ((rawDown & KEY_TOUCH) != 0) || !g_touchWasHeld;
+    g_touchWasHeld = 1;
+    if (!pressed) return;
+    if (pos.py < 18) {
+        if (pos.px < 80) g_uiTab = UI_TAB_SINGLE;
+        else if (pos.px < 160) g_uiTab = UI_TAB_COMBO;
+        else g_uiTab = UI_TAB_LOG;
+        g_uiDirty = 1;
+        return;
+    }
+    if (pos.py >= 168) {
+        if (pos.px < 96) {
+            uiSave();
             g_uiDirty = 1;
-            return;
         }
-        if (pos.py >= 168) {
-            if (pos.px < 96) {
-                uiSave();
-                g_uiDirty = 1;
-            }
-            return;
-        }
-        if ((g_uiTab == UI_TAB_SINGLE || g_uiTab == UI_TAB_COMBO) && pos.py >= 24 && pos.py < 160) {
-            if (pos.px > 232) {
-                if (pos.py < 96) {
-                    if (g_uiTab == UI_TAB_SINGLE && g_uiScrollSingle > 0) g_uiScrollSingle--;
-                    if (g_uiTab == UI_TAB_COMBO && g_uiScrollCombo > 0) g_uiScrollCombo--;
-                } else {
-                    if (g_uiTab == UI_TAB_SINGLE && g_uiScrollSingle < UI_TARGET_COUNT - UI_ROWS_VISIBLE) g_uiScrollSingle++;
-                    if (g_uiTab == UI_TAB_COMBO && g_uiScrollCombo < UI_TARGET_COUNT - UI_ROWS_VISIBLE) g_uiScrollCombo++;
-                }
-                g_uiDirty = 1;
-                return;
-            }
-            yrow = (pos.py - 24) / 10;
-            if (yrow < 0) yrow = 0;
-            if (yrow >= UI_ROWS_VISIBLE) yrow = UI_ROWS_VISIBLE - 1;
-            if (g_uiTab == UI_TAB_SINGLE) {
-                g_uiSelectedSingle = g_uiScrollSingle + yrow;
-                if (g_uiSelectedSingle >= UI_TARGET_COUNT) g_uiSelectedSingle = UI_TARGET_COUNT - 1;
-                g_uiCaptureSingle = g_uiSelectedSingle;
-                uiLog("single: %s", g_targets[g_uiSelectedSingle].name);
+        return;
+    }
+    if ((g_uiTab == UI_TAB_SINGLE || g_uiTab == UI_TAB_COMBO) && pos.py >= 24 && pos.py < 160) {
+        if (pos.px > 232) {
+            if (pos.py < 96) {
+                if (g_uiTab == UI_TAB_SINGLE && g_uiScrollSingle > 0) g_uiScrollSingle--;
+                if (g_uiTab == UI_TAB_COMBO && g_uiScrollCombo > 0) g_uiScrollCombo--;
             } else {
-                g_uiSelectedCombo = g_uiScrollCombo + yrow;
-                if (g_uiSelectedCombo >= UI_TARGET_COUNT) g_uiSelectedCombo = UI_TARGET_COUNT - 1;
-                g_uiCaptureCombo = g_uiSelectedCombo;
-                uiLog("combo: %s", g_targets[g_uiSelectedCombo].name);
+                if (g_uiTab == UI_TAB_SINGLE && g_uiScrollSingle < UI_TARGET_COUNT - UI_ROWS_VISIBLE) g_uiScrollSingle++;
+                if (g_uiTab == UI_TAB_COMBO && g_uiScrollCombo < UI_TARGET_COUNT - UI_ROWS_VISIBLE) g_uiScrollCombo++;
             }
             g_uiDirty = 1;
+            return;
         }
+        yrow = (pos.py - 24) / 10;
+        if (yrow < 0) yrow = 0;
+        if (yrow >= UI_ROWS_VISIBLE) yrow = UI_ROWS_VISIBLE - 1;
+        if (g_uiTab == UI_TAB_SINGLE) {
+            g_uiSelectedSingle = g_uiScrollSingle + yrow;
+            if (g_uiSelectedSingle >= UI_TARGET_COUNT) g_uiSelectedSingle = UI_TARGET_COUNT - 1;
+            g_uiCaptureSingle = g_uiSelectedSingle;
+            uiLog("single: %s", g_targets[g_uiSelectedSingle].name);
+        } else {
+            g_uiSelectedCombo = g_uiScrollCombo + yrow;
+            if (g_uiSelectedCombo >= UI_TARGET_COUNT) g_uiSelectedCombo = UI_TARGET_COUNT - 1;
+            g_uiCaptureCombo = g_uiSelectedCombo;
+            uiLog("combo: %s", g_targets[g_uiSelectedCombo].name);
+        }
+        g_uiDirty = 1;
     }
 }
 

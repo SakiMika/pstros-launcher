@@ -579,18 +579,7 @@ static void waitForever(void) {
 }
 
 int main(int argc, char **argv) {
-    int selected;
-    int result;
-    char *rawManifest = NULL;
-    char *manifest = NULL;
-    int rawManifestLength = 0;
-    char appName[128];
-    char mainClass[192];
-    char gameId[80];
-    char midletArg[224];
-    char appArg[160];
-    char *kvmArgv[5];
-    int kvmArgc = 0;
+    int result = 0;
 
     g_scanCwd[0] = 0;
     g_launcherDir[0] = 0;
@@ -611,67 +600,91 @@ int main(int argc, char **argv) {
     }
     if (getcwd(g_scanCwd, sizeof(g_scanCwd)) == NULL) g_scanCwd[0] = 0;
 
-    scanGames();
-    selected = launcherChooseGame();
-    if (selected < 0 || selected >= g_gameCount) waitForever();
-
-    iprintf("\x1b[2J\x1b[0;0H");
-    setConsoleRow(0, "Loading J2ME game...");
-    setConsoleRow(2, g_games[selected].label);
-
-    if (!loadJarManifest(g_games[selected].path, &rawManifest, &rawManifestLength)) {
-        setConsoleRow(4, "Manifest read failed");
-        setConsoleRow(6, "Unsupported/corrupt JAR");
-        waitForever();
-    }
-    manifest = unfoldManifest(rawManifest, rawManifestLength);
-    free(rawManifest);
-    rawManifest = NULL;
-    if (manifest == NULL || !parseMidletInfo(manifest,
-                                             appName, sizeof(appName),
-                                             mainClass, sizeof(mainClass))) {
-        setConsoleRow(4, "MIDlet-1 not found");
-        free(manifest);
-        waitForever();
-    }
-
-    makeGameId(g_games[selected].path, gameId, sizeof(gameId));
-    pstrosUiSetGameId(gameId, appName);
-    if (!pstrosConfigureSaveStorageForGame(gameId)) {
-        setConsoleRow(5, "Save: read-only");
-    } else {
-        setConsoleRow(5, "Save: enabled");
-    }
-
     irqSet(IRQ_VBLANK, kvm_vblank_handler);
     lcdSetVBlankIrq(true);
     irqEnable(IRQ_VBLANK);
 
-    initJadBuffer();
-    if (!setJadBufferText(manifest)) {
+    for (;;) {
+        int selected;
+        char *rawManifest = NULL;
+        char *manifest = NULL;
+        int rawManifestLength = 0;
+        char appName[128];
+        char mainClass[192];
+        char gameId[80];
+        char midletArg[224];
+        char appArg[160];
+        char *kvmArgv[5];
+        int kvmArgc = 0;
+
+        scanGames();
+        selected = launcherChooseGame();
+        if (selected < 0 || selected >= g_gameCount) waitForever();
+
+        iprintf("\x1b[2J\x1b[0;0H");
+        setConsoleRow(0, "Loading J2ME game...");
+        setConsoleRow(2, g_games[selected].label);
+
+        if (!loadJarManifest(g_games[selected].path, &rawManifest, &rawManifestLength)) {
+            setConsoleRow(4, "Manifest read failed");
+            setConsoleRow(6, "Unsupported/corrupt JAR");
+            waitForever();
+        }
+        manifest = unfoldManifest(rawManifest, rawManifestLength);
+        free(rawManifest);
+        rawManifest = NULL;
+        if (manifest == NULL || !parseMidletInfo(manifest,
+                                                 appName, sizeof(appName),
+                                                 mainClass, sizeof(mainClass))) {
+            setConsoleRow(4, "MIDlet-1 not found");
+            free(manifest);
+            waitForever();
+        }
+
+        makeGameId(g_games[selected].path, gameId, sizeof(gameId));
+        pstrosUiSetGameId(gameId, appName);
+        if (!pstrosConfigureSaveStorageForGame(gameId)) {
+            setConsoleRow(5, "Save: read-only");
+        } else {
+            setConsoleRow(5, "Save: enabled");
+        }
+
+        initJadBuffer();
+        if (!setJadBufferText(manifest)) {
+            free(manifest);
+            setConsoleRow(7, "Manifest memory failed");
+            waitForever();
+        }
         free(manifest);
-        setConsoleRow(7, "Manifest memory failed");
+
+        RequestedHeapSize = DEFAULTHEAPSIZE;
+        UserClassPath = g_games[selected].path;
+
+        kvmArgv[kvmArgc++] = "nds.pstros.MainApp";
+        snprintf(midletArg, sizeof(midletArg), "-C%s", mainClass);
+        snprintf(appArg, sizeof(appArg), "-A%s", appName);
+        kvmArgv[kvmArgc++] = midletArg;
+        kvmArgv[kvmArgc++] = appArg;
+        kvmArgv[kvmArgc++] = "-mute";
+        if (pstrosGetSavePath() == NULL || pstrosGetSavePath()[0] == 0) {
+            kvmArgv[kvmArgc++] = "-ro";
+        }
+
+        pstrosUiActivate();
+        result = StartJVM(kvmArgc, kvmArgv);
+        pstrosAudioDiagKvmExit(result);
+        freeJadBuffer();
+
+        if (result == 0) {
+            /* Normal MIDlet exit: go back to the launcher list. */
+            pstrosSetVmConsoleEnabled(0);
+            iprintf("\x1b[2J\x1b[0;0H");
+            continue;
+        }
+
+        /* Abnormal exit: keep diagnostics visible. */
         waitForever();
     }
-    free(manifest);
 
-    RequestedHeapSize = DEFAULTHEAPSIZE;
-    UserClassPath = g_games[selected].path;
-
-    kvmArgv[kvmArgc++] = "nds.pstros.MainApp";
-    snprintf(midletArg, sizeof(midletArg), "-C%s", mainClass);
-    snprintf(appArg, sizeof(appArg), "-A%s", appName);
-    kvmArgv[kvmArgc++] = midletArg;
-    kvmArgv[kvmArgc++] = appArg;
-    kvmArgv[kvmArgc++] = "-mute";
-    if (pstrosGetSavePath() == NULL || pstrosGetSavePath()[0] == 0) {
-        kvmArgv[kvmArgc++] = "-ro";
-    }
-
-    pstrosUiActivate();
-    result = StartJVM(kvmArgc, kvmArgv);
-    pstrosAudioDiagKvmExit(result);
-    freeJadBuffer();
-    waitForever();
     return result;
 }

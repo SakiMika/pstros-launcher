@@ -251,9 +251,16 @@ static int gxj_png_decode_pixels(
                     g = plte[idx * 3 + 1];
                     b = plte[idx * 3 + 2];
                 }
-                if (idx < trnsLen) a = trns[idx];
+                if (idx < trnsLen) {
+                    a = trns[idx] & 0xFF;
+                } else if (r == 255 && g == 0 && b == 255) {
+                    /* Compatibility fallback for legacy assets that rely on
+                     * palette index 0 / magenta key transparency without a
+                     * usable tRNS table. */
+                    a = 0;
+                }
                 pixelBuf[outIndex] = gxj_rgb15(r, g, b);
-                alphaBuf[outIndex++] = (char)a;
+                alphaBuf[outIndex++] = (char)(a & 0xFF);
             }
         } else if (colorType == 4) {
             if (bitDepth == 8) {
@@ -405,7 +412,10 @@ static inline int decode_png_image(imageSrcData *src, imageDstData *dst) {
     if (colorType == 0) {
         dst->image->imgType = 0;
     } else if (colorType == 3) {
-        dst->image->imgType = 3;
+        /* Keep full alpha data for indexed PNGs. Some J2ME games (for example
+         * God of War: Betrayal) use tRNS on palette entries and later image
+         * transforms/crops expect the alpha buffer to survive. */
+        dst->image->imgType = 2;
     } else {
         dst->image->imgType = 2;
     }

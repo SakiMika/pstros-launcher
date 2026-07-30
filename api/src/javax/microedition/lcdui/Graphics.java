@@ -1579,7 +1579,7 @@ public class Graphics implements DirectGraphics {
 			srcOffset = y* width + startOffset;
 			dstOffset = offset + (y * scan);
 			for (x = 0; x < width; x++) {
-				alpha = alphaData[srcOffset] >> 4;
+				alpha = (alphaData[srcOffset] & 0xFF) >> 4;
 				srcPix = pixelData[srcOffset++];
 				pixels[dstOffset++] = (short)((alpha << 12) |
 						(((srcPix >> 11) & 0xF)) |
