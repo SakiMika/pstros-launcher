@@ -12,6 +12,9 @@
 #endif
 
 static char g_uiPath[256] = "fat:/pstro_launcher.keys";
+static char g_uiFallbackPath[256] = "fat:/pstro_launcher.keys";
+static char g_uiLocalPath[128] = "pstro_launcher.keys";
+static char g_uiSafeId[96] = "pstro_launcher";
 static char g_uiGameName[32] = "Pstro Laucher";
 
 #define PSTROS_VKEY_NUM7   (1u << 17)
@@ -26,6 +29,16 @@ static char g_uiGameName[32] = "Pstro Laucher";
 #define UI_LOG_LINES     14
 #define UI_TARGET_COUNT  10
 #define UI_LOG_CAP       24
+
+/* Touch regions are deliberately separated so Force Fit can never select a
+ * key row. Console rows are 8 pixels high on the NDS text console. */
+#define UI_TOUCH_TAB_BOTTOM     18
+#define UI_TOUCH_LIST_TOP       24
+#define UI_TOUCH_LIST_ROW_H      8
+#define UI_TOUCH_LIST_BOTTOM   (UI_TOUCH_LIST_TOP + UI_ROWS_VISIBLE * UI_TOUCH_LIST_ROW_H)
+#define UI_TOUCH_FORCE_TOP     144
+#define UI_TOUCH_FORCE_BOTTOM  168
+#define UI_TOUCH_SAVE_TOP      168
 
 typedef struct {
     const char *name;
@@ -76,33 +89,53 @@ static char g_logLines[UI_LOG_CAP][32];
 static int g_logCount;
 static int g_logHead;
 static int g_touchWasHeld;
+static int g_touchActionLocked;
+static int g_touchReleaseFrames;
+static int g_forceFit = 0;
 
 void pstrosUiSetGameId(const char *gameId, const char *displayName) {
-    char safe[96];
     int i = 0;
     int j = 0;
     if (gameId == NULL) gameId = "j2me_game";
-    while (gameId[i] && j < (int)sizeof(safe) - 1) {
+    while (gameId[i] && j < (int)sizeof(g_uiSafeId) - 1) {
         unsigned char c = (unsigned char)gameId[i++];
         if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
             (c >= '0' && c <= '9')) {
-            safe[j++] = (char)c;
-        } else if (j > 0 && safe[j - 1] != '_') {
-            safe[j++] = '_';
+            g_uiSafeId[j++] = (char)c;
+        } else if (j > 0 && g_uiSafeId[j - 1] != '_') {
+            g_uiSafeId[j++] = '_';
         }
     }
-    while (j > 0 && safe[j - 1] == '_') j--;
+    while (j > 0 && g_uiSafeId[j - 1] == '_') j--;
     if (j == 0) {
-        strcpy(safe, "j2me_game");
+        strcpy(g_uiSafeId, "j2me_game");
     } else {
-        safe[j] = 0;
+        g_uiSafeId[j] = 0;
     }
-    snprintf(g_uiPath, sizeof(g_uiPath), "fat:/%s.keys", safe);
+    snprintf(g_uiFallbackPath, sizeof(g_uiFallbackPath), "fat:/%s.keys", g_uiSafeId);
+    snprintf(g_uiLocalPath, sizeof(g_uiLocalPath), "%s.keys", g_uiSafeId);
+    snprintf(g_uiPath, sizeof(g_uiPath), "%s", g_uiFallbackPath);
     if (displayName != NULL && displayName[0] != 0) {
         snprintf(g_uiGameName, sizeof(g_uiGameName), "%s", displayName);
     } else {
-        snprintf(g_uiGameName, sizeof(g_uiGameName), "%s", safe);
+        snprintf(g_uiGameName, sizeof(g_uiGameName), "%s", g_uiSafeId);
     }
+    g_uiReady = 0;
+    g_uiDirty = 1;
+}
+
+void pstrosUiSetGamePath(const char *jarPath) {
+    const char *slash;
+    const char *dot;
+    size_t len;
+    if (jarPath == NULL || jarPath[0] == 0) return;
+    slash = strrchr(jarPath, '/');
+    dot = strrchr(jarPath, '.');
+    if (dot == NULL || (slash != NULL && dot < slash)) dot = jarPath + strlen(jarPath);
+    len = (size_t)(dot - jarPath);
+    if (len > sizeof(g_uiPath) - 6) len = sizeof(g_uiPath) - 6;
+    memcpy(g_uiPath, jarPath, len);
+    memcpy(g_uiPath + len, ".keys", 6);
     g_uiReady = 0;
     g_uiDirty = 1;
 }
@@ -163,6 +196,7 @@ static void formatMap(char *out, int outSize, int target, int combo) {
 }
 
 static void uiDefaults(void) {
+    g_forceFit = 0;
     memset(g_singleMap, 0, sizeof(g_singleMap));
     memset(g_comboMap1, 0, sizeof(g_comboMap1));
     memset(g_comboMap2, 0, sizeof(g_comboMap2));
@@ -176,22 +210,73 @@ static void uiDefaults(void) {
     g_singleMap[9] = KEY_START;   /* # */
 }
 
+static FILE *uiOpenRead(void) {
+    FILE *fp = fopen(g_uiPath, "rb");
+    if (fp != NULL) return fp;
+    if (strcmp(g_uiFallbackPath, g_uiPath) != 0) {
+        fp = fopen(g_uiFallbackPath, "rb");
+        if (fp != NULL) {
+            snprintf(g_uiPath, sizeof(g_uiPath), "%s", g_uiFallbackPath);
+            return fp;
+        }
+    }
+    fp = fopen(g_uiLocalPath, "rb");
+    if (fp != NULL) {
+        snprintf(g_uiPath, sizeof(g_uiPath), "%s", g_uiLocalPath);
+    }
+    return fp;
+}
+
+static int uiFilePrintf(FILE *fp, const char *format, ...) {
+    char line[96];
+    int length;
+    va_list ap;
+    if (fp == NULL || format == NULL) return 0;
+    va_start(ap, format);
+    length = vsnprintf_md(line, sizeof(line), format, ap);
+    va_end(ap);
+    if (length < 0) return 0;
+    if (length >= (int)sizeof(line)) length = (int)sizeof(line) - 1;
+    return fwrite(line, 1, (size_t)length, fp) == (size_t)length;
+}
+
+static FILE *uiOpenWrite(void) {
+    FILE *fp = fopen(g_uiPath, "wb");
+    if (fp != NULL) return fp;
+    if (strcmp(g_uiFallbackPath, g_uiPath) != 0) {
+        fp = fopen(g_uiFallbackPath, "wb");
+        if (fp != NULL) {
+            snprintf(g_uiPath, sizeof(g_uiPath), "%s", g_uiFallbackPath);
+            return fp;
+        }
+    }
+    fp = fopen(g_uiLocalPath, "wb");
+    if (fp != NULL) {
+        snprintf(g_uiPath, sizeof(g_uiPath), "%s", g_uiLocalPath);
+    }
+    return fp;
+}
+
 static void uiLoad(void) {
     FILE *fp;
     char tag[16];
     int idx;
+    int allowFit = 0;
     unsigned int a, b;
     uiDefaults();
-    fp = fopen(g_uiPath, "rb");
+    fp = uiOpenRead();
     if (fp == NULL) {
         uiLog("cfg: defaults");
         return;
     }
-    if (fscanf(fp, "%15s", tag) != 1 || strcmp(tag, "PSTROSKEYS4") != 0) {
+    if (fscanf(fp, "%15s", tag) != 1 ||
+        (strcmp(tag, "PSTROSKEYS4") != 0 && strcmp(tag, "PSTROSKEYS5") != 0 &&
+         strcmp(tag, "PSTROSKEYS6") != 0)) {
         fclose(fp);
         uiLog("cfg: old ignored");
         return;
     }
+    allowFit = strcmp(tag, "PSTROSKEYS6") == 0;
     while (fscanf(fp, "%15s", tag) == 1) {
         if (strcmp(tag, "S") == 0) {
             if (fscanf(fp, "%d %u", &idx, &a) == 2 && idx >= 0 && idx < UI_TARGET_COUNT) {
@@ -202,6 +287,8 @@ static void uiLoad(void) {
                 g_comboMap1[idx] = a;
                 g_comboMap2[idx] = b;
             }
+        } else if (strcmp(tag, "F") == 0) {
+            if (fscanf(fp, "%d", &idx) == 1 && allowFit) g_forceFit = idx ? 1 : 0;
         } else {
             char discard[64];
             fgets(discard, sizeof(discard), fp);
@@ -214,20 +301,23 @@ static void uiLoad(void) {
 static void uiSave(void) {
     FILE *fp;
     int i;
-    fp = fopen(g_uiPath, "wb");
+    int ok = 1;
+    fp = uiOpenWrite();
     if (fp == NULL) {
         uiLog("cfg: save fail");
         return;
     }
-    fprintf(fp, "PSTROSKEYS4\n");
+    ok = ok && uiFilePrintf(fp, "PSTROSKEYS6\n");
     for (i = 0; i < UI_TARGET_COUNT; i++) {
-        fprintf(fp, "S %d %u\n", i, g_singleMap[i]);
+        ok = ok && uiFilePrintf(fp, "S %d %u\n", i, g_singleMap[i]);
     }
     for (i = 0; i < UI_TARGET_COUNT; i++) {
-        fprintf(fp, "C %d %u %u\n", i, g_comboMap1[i], g_comboMap2[i]);
+        ok = ok && uiFilePrintf(fp, "C %d %u %u\n", i, g_comboMap1[i], g_comboMap2[i]);
     }
-    fclose(fp);
-    uiLog("cfg: saved");
+    ok = ok && uiFilePrintf(fp, "F %d\n", g_forceFit ? 1 : 0);
+    if (fflush(fp) != 0) ok = 0;
+    if (fclose(fp) != 0) ok = 0;
+    uiLog(ok ? "cfg: saved" : "cfg: write fail");
 }
 
 static void uiInit(void) {
@@ -242,6 +332,8 @@ static void uiInit(void) {
     g_uiScrollCombo = 0;
     g_prevLogicalHeld = 0;
     g_touchWasHeld = 0;
+    g_touchActionLocked = 0;
+    g_touchReleaseFrames = 0;
     uiLoad();
     g_uiReady = 1;
     g_uiDirty = 1;
@@ -299,6 +391,8 @@ static void drawSingleTab(void) {
         buildMapRow(row, sizeof(row), idx == g_uiSelectedSingle, g_targets[idx].name, map);
         uiSetRow(UI_ROW_LIST_START + i, row);
     }
+    snprintf(row, sizeof(row), "[force fit: %s]", g_forceFit ? "on" : "off");
+    uiSetRow(19, row);
     uiSetRow(20, "D-pad = 2/4/6/8 fixed");
     uiSetRow(21, "[save]                ");
     uiSetRow(22, g_statusHang);
@@ -381,35 +475,69 @@ static void uiHandleTouch(unsigned int rawDown, unsigned int rawHeld) {
     touchPosition pos;
     int yrow;
     int pressed;
+
     if ((rawHeld & KEY_TOUCH) == 0) {
-        g_touchWasHeld = 0;
+        /* Require two release frames before accepting another touch. This
+         * prevents touch-panel jitter from producing a second action. */
+        if (g_touchReleaseFrames < 2) g_touchReleaseFrames++;
+        if (g_touchReleaseFrames >= 2) {
+            g_touchWasHeld = 0;
+            g_touchActionLocked = 0;
+        }
         return;
     }
+
+    g_touchReleaseFrames = 0;
     touchRead(&pos);
     if (pos.px < 0 || pos.py < 0) {
         g_touchWasHeld = 1;
         return;
     }
+
     pressed = ((rawDown & KEY_TOUCH) != 0) || !g_touchWasHeld;
     g_touchWasHeld = 1;
-    if (!pressed) return;
-    if (pos.py < 18) {
+    if (!pressed || g_touchActionLocked) return;
+
+    /* One physical contact may trigger only one UI action. */
+    g_touchActionLocked = 1;
+
+    if (pos.py < UI_TOUCH_TAB_BOTTOM) {
+        g_uiCaptureSingle = -1;
+        g_uiCaptureCombo = -1;
         if (pos.px < 80) g_uiTab = UI_TAB_SINGLE;
         else if (pos.px < 160) g_uiTab = UI_TAB_COMBO;
         else g_uiTab = UI_TAB_LOG;
         g_uiDirty = 1;
         return;
     }
-    if (pos.py >= 168) {
+
+    /* Force Fit owns a large, isolated touch band. It is processed before
+     * every other control and cancels pending key capture. */
+    if (g_uiTab == UI_TAB_SINGLE &&
+        pos.py >= UI_TOUCH_FORCE_TOP && pos.py < UI_TOUCH_FORCE_BOTTOM) {
+        g_uiCaptureSingle = -1;
+        g_uiCaptureCombo = -1;
+        g_forceFit = !g_forceFit;
+        uiLog("force fit: %s", g_forceFit ? "on" : "off");
+        g_uiDirty = 1;
+        return;
+    }
+
+    if (pos.py >= UI_TOUCH_SAVE_TOP) {
         if (pos.px < 96) {
+            g_uiCaptureSingle = -1;
+            g_uiCaptureCombo = -1;
             uiSave();
             g_uiDirty = 1;
         }
         return;
     }
-    if ((g_uiTab == UI_TAB_SINGLE || g_uiTab == UI_TAB_COMBO) && pos.py >= 24 && pos.py < 160) {
+
+    /* The key list ends at y=104. It no longer overlaps Force Fit at all. */
+    if ((g_uiTab == UI_TAB_SINGLE || g_uiTab == UI_TAB_COMBO) &&
+        pos.py >= UI_TOUCH_LIST_TOP && pos.py < UI_TOUCH_LIST_BOTTOM) {
         if (pos.px > 232) {
-            if (pos.py < 96) {
+            if (pos.py < (UI_TOUCH_LIST_TOP + UI_TOUCH_LIST_BOTTOM) / 2) {
                 if (g_uiTab == UI_TAB_SINGLE && g_uiScrollSingle > 0) g_uiScrollSingle--;
                 if (g_uiTab == UI_TAB_COMBO && g_uiScrollCombo > 0) g_uiScrollCombo--;
             } else {
@@ -419,18 +547,21 @@ static void uiHandleTouch(unsigned int rawDown, unsigned int rawHeld) {
             g_uiDirty = 1;
             return;
         }
-        yrow = (pos.py - 24) / 10;
+
+        yrow = (pos.py - UI_TOUCH_LIST_TOP) / UI_TOUCH_LIST_ROW_H;
         if (yrow < 0) yrow = 0;
         if (yrow >= UI_ROWS_VISIBLE) yrow = UI_ROWS_VISIBLE - 1;
         if (g_uiTab == UI_TAB_SINGLE) {
             g_uiSelectedSingle = g_uiScrollSingle + yrow;
             if (g_uiSelectedSingle >= UI_TARGET_COUNT) g_uiSelectedSingle = UI_TARGET_COUNT - 1;
             g_uiCaptureSingle = g_uiSelectedSingle;
+            g_uiCaptureCombo = -1;
             uiLog("single: %s", g_targets[g_uiSelectedSingle].name);
         } else {
             g_uiSelectedCombo = g_uiScrollCombo + yrow;
             if (g_uiSelectedCombo >= UI_TARGET_COUNT) g_uiSelectedCombo = UI_TARGET_COUNT - 1;
             g_uiCaptureCombo = g_uiSelectedCombo;
+            g_uiCaptureSingle = -1;
             uiLog("combo: %s", g_targets[g_uiSelectedCombo].name);
         }
         g_uiDirty = 1;
@@ -458,6 +589,11 @@ static unsigned int buildLogicalHeld(unsigned int rawHeld) {
         }
     }
     return out;
+}
+
+int pstrosUiForceFitEnabled(void) {
+    uiInit();
+    return g_forceFit ? 1 : 0;
 }
 
 KNIEXPORT KNI_RETURNTYPE_VOID Java_nds_Key_scan() {

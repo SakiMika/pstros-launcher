@@ -116,7 +116,8 @@ check:
 	@grep -q '^int pstrosConfigureSaveStorage(void)' kvm/VmSkel/src/Java_nds_File.c || (echo "Missing pstrosConfigureSaveStorage implementation"; exit 1)
 	@grep -q '^const char \*pstrosGetSavePath(void)' kvm/VmSkel/src/Java_nds_File.c || (echo "Missing pstrosGetSavePath implementation"; exit 1)
 	@grep -q '^int pstrosGetSaveErrno(void)' kvm/VmSkel/src/Java_nds_File.c || (echo "Missing pstrosGetSaveErrno implementation"; exit 1)
-	@grep -q 'return "256x192";' kvm/VmSkel/src/file.c || (echo "Missing launcher 256x192 canvas override"; exit 1)
+	@grep -q 'pstrosGetGameResolution' kvm/VmSkel/src/file.c || (echo "Missing launcher centered canvas policy"; exit 1)
+	@grep -q 'Dynamic launcher Force Fit, final-frame path only' kvm/VmSkel/src/Java_nds_Video.c || (echo "Missing runtime Force Fit scaler"; exit 1)
 	@command -v $(NDSTOOL) >/dev/null 2>&1 || (echo "Missing ndstool in PATH"; exit 1)
 
 # This target is intentionally verbose so last_build.log shows every resolved

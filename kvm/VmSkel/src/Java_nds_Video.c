@@ -60,6 +60,8 @@ static int pstrosAudioSlotsReady = 0;
 static int pstrosAudioLevel = 100;
 
 extern void pstrosUiSetStatusLine(int row, const char *text);
+extern int pstrosUiForceFitEnabled(void);
+static unsigned short pstrosFitFrame[256 * 192] __attribute__((aligned(32)));
 
 static void pstrosDiagLine(int row, const char *format, ...) {
     char line[64];
@@ -596,6 +598,7 @@ KNIEXPORT KNI_RETURNTYPE_INT Java_nds_Video_decodePngImage() {
 */
 KNIEXPORT KNI_RETURNTYPE_VOID Java_nds_Video_blit() { 
 	int i,j,j2;
+	int directScreen = 0;
 	int dstOffset, srcOffset;
 	unsigned short pixel;
 	int hasAlpha;
@@ -646,6 +649,7 @@ KNIEXPORT KNI_RETURNTYPE_VOID Java_nds_Video_blit() {
 
 	//direct rendering to the screen
 	if (dst < 0xF) { // == NULL
+		directScreen = 1;
 		dst = (jshort*) BG_BMP_RAM(0);
 		// iprintf("\x1b[19B dst =%p src=%p \n", dst, src);
 	}
@@ -655,6 +659,76 @@ KNIEXPORT KNI_RETURNTYPE_VOID Java_nds_Video_blit() {
 		hasAlpha = 0;
 	}
 	//iprintf("\x1b[19B dst =%p src=%p ac=%p t=%i a=%i \n", dst, src, alpha, transp, hasAlpha);
+
+	/*
+	 * Dynamic launcher Force Fit, final-frame path only.
+	 *
+	 * The old implementation ran for every direct Video.blit(), including
+	 * sprites and fonts. It repeatedly cleared VRAM and scaled individual
+	 * images, which caused continuous flashing. Match the complete game Canvas
+	 * by its source and clip dimensions, compose into a RAM buffer, then copy
+	 * the finished 256x192 frame to VRAM once.
+	 */
+	if (directScreen && pstrosUiForceFitEnabled() && src != NULL && srcW > 0 && srcH > 0) {
+		/* The complete Pstros frame is the direct blit whose clip exactly
+		 * matches its source Canvas. Sprite/image blits use the screen clip and
+		 * therefore do not enter this path. */
+		if (clipW == srcW && clipH == srcH) {
+			int fitW;
+			int fitH;
+			int fitX;
+			int fitY;
+			int dx;
+			int dy;
+			unsigned char *alphaU = (unsigned char *)alpha;
+
+			if (srcW * 192 >= srcH * 256) {
+				fitW = 256;
+				fitH = (srcH * 256) / srcW;
+			} else {
+				fitH = 192;
+				fitW = (srcW * 192) / srcH;
+			}
+			if (fitW < 1) fitW = 1;
+			if (fitH < 1) fitH = 1;
+			fitX = (256 - fitW) / 2;
+			fitY = (192 - fitH) / 2;
+
+			for (i = 0; i < 256 * 192; i++) pstrosFitFrame[i] = 0x8000;
+
+			for (dy = 0; dy < fitH; dy++) {
+				int sy = (dy * srcH) / fitH;
+				int dstRow = (fitY + dy) * 256 + fitX;
+				int srcRow = sy * srcW;
+				for (dx = 0; dx < fitW; dx++) {
+					int sx = (dx * srcW) / fitW;
+					int si = srcRow + sx;
+					unsigned short sp = (unsigned short)src[si];
+					if (transp) {
+						if (hasAlpha) {
+							unsigned int a = alphaU[si];
+							if (a == 0) continue;
+							if (a != 255) {
+								unsigned int rr = ((sp >> 10) & 0x1F) * a / 255;
+								unsigned int gg = ((sp >> 5) & 0x1F) * a / 255;
+								unsigned int bb = (sp & 0x1F) * a / 255;
+								sp = (unsigned short)(0x8000 | (rr << 10) | (gg << 5) | bb);
+							}
+						} else if ((sp & 0x8000) == 0) {
+							continue;
+						}
+					}
+					pstrosFitFrame[dstRow + dx] = sp;
+				}
+			}
+
+			/* One burst instead of thousands of visible VRAM writes. */
+			DC_FlushRange(pstrosFitFrame, sizeof(pstrosFitFrame));
+			dmaCopyWords(3, pstrosFitFrame, BG_BMP_RAM(0), sizeof(pstrosFitFrame));
+			goto blit_done;
+		}
+	}
+
 
    	//check clip Horizontaly    	
 	if (clipX > dstX) {    		
@@ -709,7 +783,7 @@ KNIEXPORT KNI_RETURNTYPE_VOID Java_nds_Video_blit() {
 				if (hasAlpha) {
 					for (i = dstX; i < dstMaxX; i++) {
 						pixel = src[srcOffset];
-						A = alpha[srcOffset++];
+						A = ((unsigned char*)alpha)[srcOffset++];
 						//draw pixels
 						if (A == 0xFF) { // fully opaque pixel
 							dst[dstOffset] = pixel;
@@ -771,6 +845,7 @@ KNIEXPORT KNI_RETURNTYPE_VOID Java_nds_Video_blit() {
 //	if ((opaqueDraws + transpDraws) % 10000 == 0) {
 //		iprintf("blit t:%i o:%i \n", transpDraws, opaqueDraws);
 //	}
+blit_done:
 	KNI_EndHandles(); 
 	KNI_ReturnVoid(); 
 }

@@ -57,14 +57,42 @@ public class MainApp {
 		String val;
 
 
-		/* Launcher always exposes the full native NDS canvas. */
-		Display.WIDTH = 256;
-		Display.HEIGHT = 192;
-		EmuCanvas.screenPosX = 0;
-		EmuCanvas.screenPosY = 0;
-
-		/* Ignore per-game NDS-resolution and NDS-screen-X/Y properties. */
-		val = null;
+		/*
+		 * Launcher uses the selected JAR's NDS-resolution properties unless
+		 * Force Fit overrides them to 256x192 in the native property layer.
+		 */
+		val = System.getProperty("NDS-resolution");
+		if (val != null) {
+			int index = val.indexOf('x');
+			if (index > 0) {
+				try {
+					Display.WIDTH = Integer.parseInt(val.substring(0, index));
+					Display.HEIGHT = Integer.parseInt(val.substring(index + 1));
+				} catch (Exception e) {
+					/* keep defaults */
+				}
+			}
+		}
+		val = System.getProperty("NDS-screen-X");
+		if (val != null) {
+			try {
+				EmuCanvas.screenPosX = Integer.parseInt(val.trim());
+			} catch (Exception e) {
+				EmuCanvas.screenPosX = 0;
+			}
+		} else {
+			EmuCanvas.screenPosX = 0;
+		}
+		val = System.getProperty("NDS-screen-Y");
+		if (val != null) {
+			try {
+				EmuCanvas.screenPosY = Integer.parseInt(val.trim());
+			} catch (Exception e) {
+				EmuCanvas.screenPosY = 0;
+			}
+		} else {
+			EmuCanvas.screenPosY = 0;
+		}
 
 		//remap keys
 		setKeys();

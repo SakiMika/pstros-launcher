@@ -31,6 +31,7 @@ extern void pstrosAudioDiagKvmExit(int result);
 extern int pstrosConfigureSaveStorageForGame(const char *gameId);
 extern const char *pstrosGetSavePath(void);
 extern void pstrosUiSetGameId(const char *gameId, const char *displayName);
+extern void pstrosUiSetGamePath(const char *jarPath);
 extern void pstrosUiActivate(void);
 extern int pstrosLauncherInflateRaw(const unsigned char *compressed,
                                     int compressedLength,
@@ -643,6 +644,7 @@ int main(int argc, char **argv) {
 
         makeGameId(g_games[selected].path, gameId, sizeof(gameId));
         pstrosUiSetGameId(gameId, appName);
+        pstrosUiSetGamePath(g_games[selected].path);
         if (!pstrosConfigureSaveStorageForGame(gameId)) {
             setConsoleRow(5, "Save: read-only");
         } else {

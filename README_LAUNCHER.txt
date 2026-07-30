@@ -64,3 +64,11 @@ CHE DO CANVAS
 Ban launcher luon cap Canvas 256x192 tai vi tri X=0, Y=0.
 Cac gia tri NDS-resolution, NDS-screen-X va NDS-screen-Y trong tung game bi bo qua.
 Game dung do phan giai khac nen duoc chinh sang 256x192 truoc khi thu.
+
+Force Fit / Centering update
+----------------------------
+- Default mode keeps the game's original canvas size and centers it on 256x192.
+- Force Fit scales the completed framebuffer to fit inside 256x192 while preserving aspect ratio.
+- Tall/portrait games are reduced vertically instead of being cropped from the top-left.
+- Force Fit changes take effect during the next rendered frame; restarting the game is not required.
+- Key/Force Fit configuration is saved beside the selected JAR when possible, with FAT-root and current-directory fallbacks.
