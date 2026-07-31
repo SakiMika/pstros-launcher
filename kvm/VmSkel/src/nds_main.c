@@ -33,6 +33,7 @@ extern const char *pstrosGetSavePath(void);
 extern void pstrosUiSetGameId(const char *gameId, const char *displayName);
 extern void pstrosUiSetGamePath(const char *jarPath);
 extern void pstrosUiActivate(void);
+extern void pstrosSetNokiaFullCanvasMode(int enabled);
 extern int pstrosLauncherInflateRaw(const unsigned char *compressed,
                                     int compressedLength,
                                     unsigned char *output,
@@ -477,6 +478,159 @@ done:
     return ok;
 }
 
+
+static int launcherEndsWithClass(const char *name) {
+    size_t length;
+    if (name == NULL) return 0;
+    length = strlen(name);
+    if (length < 6) return 0;
+    return name[length - 6] == '.' &&
+           tolower((unsigned char)name[length - 5]) == 'c' &&
+           tolower((unsigned char)name[length - 4]) == 'l' &&
+           tolower((unsigned char)name[length - 3]) == 'a' &&
+           tolower((unsigned char)name[length - 2]) == 's' &&
+           tolower((unsigned char)name[length - 1]) == 's';
+}
+
+static int launcherBufferContains(const unsigned char *buffer,
+                                  unsigned long bufferLength,
+                                  const char *needle) {
+    unsigned long i;
+    size_t needleLength;
+    if (buffer == NULL || needle == NULL) return 0;
+    needleLength = strlen(needle);
+    if (needleLength == 0 || bufferLength < needleLength) return 0;
+    for (i = 0; i + needleLength <= bufferLength; i++) {
+        if (buffer[i] == (unsigned char)needle[0] &&
+            memcmp(buffer + i, needle, needleLength) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Detect old Nokia games that subclass com.nokia.mid.ui.FullCanvas. The
+ * launcher cannot rewrite a FAT JAR, so it inspects one class at a time and
+ * enables a native property override only for the selected game. */
+static int jarUsesNokiaFullCanvas(const char *path) {
+    static const char fullCanvasName[] = "com/nokia/mid/ui/FullCanvas";
+    FILE *fp = NULL;
+    unsigned char *tail = NULL;
+    unsigned char *compressed = NULL;
+    unsigned char *classData = NULL;
+    long fileSize;
+    long tailStart;
+    int tailSize;
+    int eocd = -1;
+    unsigned long centralOffset;
+    unsigned int entryCount;
+    unsigned int i;
+    int found = 0;
+
+    if (path == NULL) return 0;
+    fp = fopen(path, "rb");
+    if (fp == NULL) goto done;
+    if (fseek(fp, 0, SEEK_END) != 0) goto done;
+    fileSize = ftell(fp);
+    if (fileSize < 22) goto done;
+    tailSize = (int)(fileSize < LAUNCHER_ZIP_TAIL_MAX ? fileSize : LAUNCHER_ZIP_TAIL_MAX);
+    tailStart = fileSize - tailSize;
+    tail = (unsigned char *)malloc((size_t)tailSize);
+    if (tail == NULL || !readAt(fp, tailStart, tail, tailSize)) goto done;
+    for (i = (unsigned int)(tailSize - 22); ; i--) {
+        if (readLe32(tail + i) == 0x06054b50UL) {
+            eocd = (int)i;
+            break;
+        }
+        if (i == 0) break;
+    }
+    if (eocd < 0) goto done;
+    entryCount = readLe16(tail + eocd + 10);
+    centralOffset = readLe32(tail + eocd + 16);
+    if (fseek(fp, (long)centralOffset, SEEK_SET) != 0) goto done;
+
+    for (i = 0; i < entryCount; i++) {
+        unsigned char header[46];
+        unsigned int method;
+        unsigned long compSize;
+        unsigned long uncompSize;
+        unsigned int nameLen;
+        unsigned int extraLen;
+        unsigned int commentLen;
+        unsigned long localOffset;
+        char name[260];
+        long nextCentral;
+
+        if (fread(header, 1, sizeof(header), fp) != sizeof(header)) goto done;
+        if (readLe32(header) != 0x02014b50UL) goto done;
+        method = readLe16(header + 10);
+        compSize = readLe32(header + 20);
+        uncompSize = readLe32(header + 24);
+        nameLen = readLe16(header + 28);
+        extraLen = readLe16(header + 30);
+        commentLen = readLe16(header + 32);
+        localOffset = readLe32(header + 42);
+        if (nameLen >= sizeof(name)) goto done;
+        if (fread(name, 1, nameLen, fp) != nameLen) goto done;
+        name[nameLen] = 0;
+        nextCentral = ftell(fp) + extraLen + commentLen;
+
+        if (!launcherEndsWithClass(name) || uncompSize == 0 ||
+            uncompSize > (512UL * 1024UL) || compSize > (512UL * 1024UL) ||
+            (method != 0 && method != 8)) {
+            if (fseek(fp, nextCentral, SEEK_SET) != 0) goto done;
+            continue;
+        }
+
+        {
+            unsigned char local[30];
+            unsigned int localNameLen;
+            unsigned int localExtraLen;
+            long dataOffset;
+            int decoded = 0;
+
+            if (!readAt(fp, (long)localOffset, local, sizeof(local))) goto done;
+            if (readLe32(local) != 0x04034b50UL) goto done;
+            localNameLen = readLe16(local + 26);
+            localExtraLen = readLe16(local + 28);
+            dataOffset = (long)localOffset + 30 + localNameLen + localExtraLen;
+
+            compressed = (unsigned char *)calloc((size_t)compSize + 8, 1);
+            classData = (unsigned char *)malloc((size_t)uncompSize + 1);
+            if (compressed == NULL || classData == NULL) goto done;
+            if (!readAt(fp, dataOffset, compressed, (int)compSize)) goto done;
+
+            if (method == 0) {
+                if (compSize == uncompSize) {
+                    memcpy(classData, compressed, (size_t)uncompSize);
+                    decoded = 1;
+                }
+            } else {
+                decoded = pstrosLauncherInflateRaw(compressed, (int)compSize,
+                                                    classData, (int)uncompSize);
+            }
+
+            if (decoded && launcherBufferContains(classData, uncompSize, fullCanvasName)) {
+                found = 1;
+                goto done;
+            }
+
+            free(compressed);
+            compressed = NULL;
+            free(classData);
+            classData = NULL;
+            if (fseek(fp, nextCentral, SEEK_SET) != 0) goto done;
+        }
+    }
+
+done:
+    if (fp != NULL) fclose(fp);
+    free(tail);
+    free(compressed);
+    free(classData);
+    return found;
+}
+
 static char *unfoldManifest(const char *input, int inputLength) {
     char *out;
     int inPos = 0;
@@ -645,6 +799,12 @@ int main(int argc, char **argv) {
         makeGameId(g_games[selected].path, gameId, sizeof(gameId));
         pstrosUiSetGameId(gameId, appName);
         pstrosUiSetGamePath(g_games[selected].path);
+        if (jarUsesNokiaFullCanvas(g_games[selected].path)) {
+            pstrosSetNokiaFullCanvasMode(1);
+            setConsoleRow(7, "Key5: Nokia FIRE");
+        } else {
+            pstrosSetNokiaFullCanvasMode(0);
+        }
         if (!pstrosConfigureSaveStorageForGame(gameId)) {
             setConsoleRow(5, "Save: read-only");
         } else {

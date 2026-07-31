@@ -11,6 +11,11 @@ char fileName[256];
 
 static char *propertyBuffer = NULL;
 static char propertyEntry[512];
+static int pstrosNokiaFullCanvasMode = 0;
+
+void pstrosSetNokiaFullCanvasMode(int enabled) {
+    pstrosNokiaFullCanvasMode = enabled ? 1 : 0;
+}
 
 extern char *UserClassPath;
 
@@ -91,6 +96,13 @@ char *getPlatformProperty(char *key) {
     char *value;
 
     if (key == NULL) return NULL;
+
+    /* Nokia FullCanvas compatibility: ROMized FullCanvas does not translate
+     * the normal MIDP KEY_NUM5 code correctly in some old S40 games. For JARs
+     * detected as extending FullCanvas, expose logical B/5 as center FIRE. */
+    if (pstrosNokiaFullCanvasMode && strcmp(key, "NDS-key-B") == 0) {
+        return "keyFire";
+    }
 
     /* Always expose one resolved logical Canvas size. This keeps Java's
      * Display.WIDTH/HEIGHT and the native centering/scaler in sync even when
