@@ -1,0 +1,17 @@
+PSTROS ARGV + TWiLight integration validation
+=============================================
+
+Static changes:
+- kvm/VmSkel/src/nds_main.c accepts argv[1] when it ends in .jar.
+- argv[1] is opened directly; filename is not guessed or hard-coded.
+- non-ARGV launch path preserves the original recursive chooser.
+- normal JVM exit in ARGV mode returns from main instead of entering the chooser.
+
+TWiLight add-on:
+- config.jar.ini uses ARG=%PATH%.
+- BANNER_PATH points to pstros_java.png.
+- pstros_java.png validated at 32x32 and 15 visible colors.
+
+Compilation status:
+- NOT compiled in this environment because devkitPro/devkitARM and ndstool are not installed.
+- Source-level patch and TWiLight configuration have been generated for build/testing on the normal devkitPro environment.
