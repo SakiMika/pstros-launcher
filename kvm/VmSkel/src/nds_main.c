@@ -212,7 +212,7 @@ static void dirnameFromPath(const char *path, char *out, int outSize) {
     out[len] = 0;
 }
 
-static void scanGames(void) {
+static void resetGameList(void) {
     g_gameCount = 0;
     g_selected = 0;
     g_scroll = 0;
@@ -220,6 +220,25 @@ static void scanGames(void) {
     g_scanDirsOpened = 0;
     g_scanEntriesSeen = 0;
     g_scanRootOpened = 0;
+}
+
+static int setArgvGame(const char *path) {
+    FILE *probe;
+    if (path == NULL || !endsWithJar(path)) return 0;
+
+    /* Do not use stat(): the launcher already avoids it because some DLDI/libfat
+     * combinations can enumerate/open a file while stat() still fails. */
+    probe = fopen(path, "rb");
+    if (probe == NULL) return -1;
+    fclose(probe);
+
+    resetGameList();
+    addGame(path);
+    return g_gameCount == 1 ? 1 : -1;
+}
+
+static void scanGames(void) {
+    resetGameList();
 
     /* The canonical libfat mount. */
     scanDirectory("fat:/", 0);
@@ -735,7 +754,10 @@ static void waitForever(void) {
 
 int main(int argc, char **argv) {
     int result = 0;
+    int argvLaunch = 0;
+    char argvJarPath[LAUNCHER_PATH_MAX + 1];
 
+    argvJarPath[0] = 0;
     g_scanCwd[0] = 0;
     g_launcherDir[0] = 0;
     if (argc > 0 && argv != NULL && argv[0] != NULL) {
@@ -755,6 +777,24 @@ int main(int argc, char **argv) {
     }
     if (getcwd(g_scanCwd, sizeof(g_scanCwd)) == NULL) g_scanCwd[0] = 0;
 
+    /* TWiLight Menu++ config.jar.ini launches this binary with the selected
+     * JAR as argv[1].  The filename is never hard-coded: ARG=%PATH% supplies
+     * the exact path of whichever .jar the user selected. */
+    if (argc > 1 && argv != NULL && argv[1] != NULL && argv[1][0] != 0) {
+        int argvState;
+        snprintf(argvJarPath, sizeof(argvJarPath), "%s", argv[1]);
+        argvJarPath[sizeof(argvJarPath) - 1] = 0;
+        argvState = setArgvGame(argvJarPath);
+        if (argvState < 0) {
+            iprintf("\x1b[2J\x1b[0;0H");
+            iprintf("Pstro Launcher - ARGV\n\n");
+            iprintf("JAR path cannot be opened:\n%s\n\n", argvJarPath);
+            iprintf("Check config.jar.ini / SD path.");
+            waitForever();
+        }
+        argvLaunch = (argvState > 0);
+    }
+
     irqSet(IRQ_VBLANK, kvm_vblank_handler);
     lcdSetVBlankIrq(true);
     irqEnable(IRQ_VBLANK);
@@ -772,8 +812,13 @@ int main(int argc, char **argv) {
         char *kvmArgv[5];
         int kvmArgc = 0;
 
-        scanGames();
-        selected = launcherChooseGame();
+        if (argvLaunch) {
+            /* setArgvGame() already populated slot 0 from argv[1]. */
+            selected = 0;
+        } else {
+            scanGames();
+            selected = launcherChooseGame();
+        }
         if (selected < 0 || selected >= g_gameCount) waitForever();
 
         iprintf("\x1b[2J\x1b[0;0H");
@@ -838,9 +883,14 @@ int main(int argc, char **argv) {
         freeJadBuffer();
 
         if (result == 0) {
-            /* Normal MIDlet exit: go back to the launcher list. */
             pstrosSetVmConsoleEnabled(0);
             iprintf("\x1b[2J\x1b[0;0H");
+            if (argvLaunch) {
+                /* ARGV mode represents one file selected by the frontend; do not
+                 * fall through into PSTROS' own recursive JAR chooser. */
+                return 0;
+            }
+            /* Direct launch without ARGV keeps the original chooser behavior. */
             continue;
         }
 

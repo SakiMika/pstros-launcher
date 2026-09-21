@@ -1,0 +1,5 @@
+Place the ARGV-enabled build here as:
+
+    /_nds/TWiLightMenu/emulators/pstro_launcher.nds
+
+TWiLight Menu++ only lists .jar when the configured launcher binary exists.
